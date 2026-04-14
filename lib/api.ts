@@ -2114,7 +2114,7 @@ export const fastAPI = {
   // Project equipment: get activities (with completion if any). Completions: metadata only (no image_url) for fast load.
   async getEquipmentActivities(equipmentId: string) {
     const completionsSelect =
-      'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
+      'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,image_url,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
     const mapEmbedToActivities = (rows: any[]): any[] =>
       rows.map((a: any) => {
         const nested = a.equipment_activity_completions;
@@ -2182,7 +2182,7 @@ export const fastAPI = {
           return Object.fromEntries(equipmentIds.map((id) => [id, []]));
         }
         const activityIds = [...new Set(allActivities.map((a: any) => a.id))];
-        const completionsSelect = 'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
+        const completionsSelect = 'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,image_url,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
         let completions: any[] = [];
         for (const idChunk of chunkIdsForInClause(activityIds)) {
           const compRes = await api.get(
@@ -2642,7 +2642,7 @@ export const fastAPI = {
   // Standalone equipment: get activities (completions metadata only, no image_url) for fast load.
   async getStandaloneEquipmentActivities(equipmentId: string) {
     const completionsSelect =
-      'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
+      'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,image_url,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
     const mapEmbedToActivities = (rows: any[]): any[] =>
       rows.map((a: any) => {
         const nested = a.standalone_equipment_activity_completions;
@@ -2709,7 +2709,7 @@ export const fastAPI = {
           return Object.fromEntries(equipmentIds.map((id) => [id, []]));
         }
         const activityIds = [...new Set(allActivities.map((a: any) => a.id))];
-        const completionsSelect = 'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
+        const completionsSelect = 'id,activity_id,completed_on,completed_by_user_id,completed_by_display_name,notes,image_url,updated_on,updated_by,updated_by_user:updated_by(full_name),image_count,inspection_report_count,department';
         let completions: any[] = [];
         for (const idChunk of chunkIdsForInClause(activityIds)) {
           const compRes = await api.get(

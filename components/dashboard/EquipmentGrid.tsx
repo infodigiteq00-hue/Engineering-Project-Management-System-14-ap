@@ -4101,8 +4101,13 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
   // Load progress-section image (last completed milestone that has images) into session cache
   useEffect(() => {
     const isStandalone = projectId === 'standalone';
+    const visibleList = getFilteredAndSortedEquipment(localEquipment, selectedPhase, searchQuery);
+    const start = (currentPage - 1) * itemsPerPage;
+    const visiblePage = visibleList.slice(start, start + itemsPerPage);
+    const visibleIds = new Set(visiblePage.map((eq) => eq.id));
     const toLoad: { cacheKey: string; completionId: string; currentIndex: number }[] = [];
     for (const eq of localEquipment) {
+      if (!visibleIds.has(eq.id)) continue;
       const list = equipmentActivities[eq.id] || [];
       const sorted = [...list].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       const completedMilestones = sorted.filter((a: any) => a.completion && a.activity_type === 'milestone');
@@ -4152,14 +4157,19 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
           setStepImageLoading(prev => ({ ...prev, ...clearPatch }));
         });
     }
-  }, [localEquipment, equipmentActivities, progressSectionImageIndex, projectId, stepImageCache, stepImageLoading, completionImageCountFallback, getActivitiesProgressSegments]);
+  }, [localEquipment, equipmentActivities, progressSectionImageIndex, projectId, stepImageCache, stepImageLoading, completionImageCountFallback, getActivitiesProgressSegments, currentPage, itemsPerPage, selectedPhase, searchQuery, getFilteredAndSortedEquipment]);
 
   // Fetch real image count for every completed milestone completion so we can pick "last milestone with images" and show arrows
   useEffect(() => {
     const isStandalone = projectId === 'standalone';
+    const visibleList = getFilteredAndSortedEquipment(localEquipment, selectedPhase, searchQuery);
+    const start = (currentPage - 1) * itemsPerPage;
+    const visiblePage = visibleList.slice(start, start + itemsPerPage);
+    const visibleIds = new Set(visiblePage.map((eq) => eq.id));
     const toFetch: { completionId: string }[] = [];
     const seen = new Set<string>();
     for (const eq of localEquipment) {
+      if (!visibleIds.has(eq.id)) continue;
       const list = equipmentActivities[eq.id] || [];
       const sorted = [...list].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       const completedMilestones = sorted.filter((a: any) => a.completion && a.activity_type === 'milestone');
@@ -4177,7 +4187,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
         setCompletionImageCountFallback((prev) => ({ ...prev, ...countMap }));
       });
     }
-  }, [localEquipment, equipmentActivities, projectId, completionImageCountFallback]);
+  }, [localEquipment, equipmentActivities, projectId, completionImageCountFallback, currentPage, itemsPerPage, selectedPhase, searchQuery, getFilteredAndSortedEquipment]);
 
   // Submit Mark complete (create completion, auto-feed Updates tab or Progress Image, refresh activities)
   const handleMarkActivityComplete = useCallback(async () => {
@@ -10266,7 +10276,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                             }
                           }
                           const latestQapWithImages = lastMilestoneWithImages?.comp?.id
-                            ? { completionId: lastMilestoneWithImages.comp.id, imageCount: lastMilestoneWithImages.imageCount }
+                            ? { completionId: lastMilestoneWithImages.comp.id, imageCount: lastMilestoneWithImages.imageCount, legacyImageUrl: lastMilestoneWithImages.comp.image_url || null }
                             : null;
                           if (latestQapWithImages) {
                             const { completionId, imageCount } = latestQapWithImages;
@@ -10293,23 +10303,54 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                                         <Eye size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
                                       </div>
                                   </div>
-                                  ) : (
-                                    <div className="w-full h-40 sm:h-52 md:h-64 bg-gray-100 border-2 border-dashed border-gray-300 rounded-md flex items-center justify-center min-h-0">
-                                      <div className="text-center text-gray-500">
-                                        {loading ? (
-                                          <>
-                                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-400 border-t-transparent mx-auto mb-2" />
-                                            <div className="text-sm">Loading image...</div>
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Camera size={24} className="mx-auto mb-2" />
-                                            <div className="text-sm">No image</div>
-                                          </>
-                                        )}
+                                  ) : (() => {
+                                    // If QAP image is still loading, render already-available progress image immediately.
+                                    const rawCompletionFallback = latestQapWithImages.legacyImageUrl as string | null;
+                                    const completionFallback = (!rawCompletionFallback || rawCompletionFallback === PROGRESS_IMAGE_PLACEHOLDER || (rawCompletionFallback.startsWith('data:image/svg') && rawCompletionFallback.length < 200))
+                                      ? null
+                                      : rawCompletionFallback;
+                                    const rawProgressFallback = item.progressImages?.[0];
+                                    const progressFallback = (!rawProgressFallback || rawProgressFallback === PROGRESS_IMAGE_PLACEHOLDER || (rawProgressFallback.startsWith('data:image/svg') && rawProgressFallback.length < 200))
+                                      ? null
+                                      : rawProgressFallback;
+                                    const fallbackImage = completionFallback || progressFallback;
+                                    if (fallbackImage) {
+                                      return (
+                                        <div
+                                          className="relative cursor-pointer group"
+                                          onClick={() => {
+                                            setShowImagePreview({ url: fallbackImage, equipmentId: item.id, currentIndex: 0 });
+                                          }}
+                                        >
+                                          <img
+                                            src={fallbackImage}
+                                            alt="Progress"
+                                            className="w-full max-w-full h-40 sm:h-52 md:h-64 object-cover rounded-md border border-gray-200 pointer-events-none"
+                                          />
+                                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all rounded-md flex items-center justify-center pointer-events-none">
+                                            <Eye size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                                          </div>
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div className="w-full h-40 sm:h-52 md:h-64 bg-gray-100 border-2 border-dashed border-gray-300 rounded-md flex items-center justify-center min-h-0">
+                                        <div className="text-center text-gray-500">
+                                          {loading ? (
+                                            <>
+                                              <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-400 border-t-transparent mx-auto mb-2" />
+                                              <div className="text-sm">Loading image...</div>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Camera size={24} className="mx-auto mb-2" />
+                                              <div className="text-sm">No image</div>
+                                            </>
+                                          )}
+                                        </div>
                                       </div>
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
                                   {imageCount > 1 && (
                                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-black/50 rounded-md px-2 py-1">
                                       <Button
