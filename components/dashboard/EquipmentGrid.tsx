@@ -10238,7 +10238,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                         </div>
                         {/* Progress image: QAP latest completed step images (navigable) or fallback to single progress image */}
                         <div className="relative mt-4">
-                          {isLoadingProgressImages ? (
+                          {(isLoadingProgressImages && !(item.progressImages?.[0] || item.progressImagesMetadata?.length)) ? (
                           <div className="w-full h-40 sm:h-52 md:h-64 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-dashed border-blue-200 rounded-md border border-indigo-100 flex items-center justify-center min-h-0">
                             <div className="text-center">
                               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3"></div>
