@@ -2511,9 +2511,48 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
   const [newDocumentName, setNewDocumentName] = useState('');
   const [documentPreview, setDocumentPreview] = useState<{ file: File, name: string } | null>(null);
   const [documentUrlModal, setDocumentUrlModal] = useState<{ url?: string, blobUrl?: string, name: string, uploadedBy?: string, uploadDate?: string, loading?: boolean, previewLoading?: boolean, documentId?: string } | null>(null);
+  const [documentPreviewNonce, setDocumentPreviewNonce] = useState<number>(Date.now());
   const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({});
   const [documentsLoading, setDocumentsLoading] = useState<Record<string, boolean>>({});
   const [docsSearchByEquipmentId, setDocsSearchByEquipmentId] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!documentUrlModal) return;
+    // Force a fresh PDF viewer state each time modal opens/changes document.
+    setDocumentPreviewNonce(Date.now());
+  }, [documentUrlModal?.documentId, documentUrlModal?.url, documentUrlModal?.name]);
+
+  const buildFreshPdfPreviewUrl = useCallback((url: string) => {
+    const [baseUrl, existingHash = ''] = url.split('#');
+    const hashParams = new URLSearchParams(existingHash);
+    hashParams.set('page', '1');
+    hashParams.set('zoom', 'page-fit');
+    hashParams.set('view', 'Fit');
+
+    try {
+      const parsed = new URL(baseUrl);
+      parsed.searchParams.set('_preview', String(documentPreviewNonce));
+      return `${parsed.toString()}#${hashParams.toString()}`;
+    } catch {
+      const joinChar = baseUrl.includes('?') ? '&' : '?';
+      return `${baseUrl}${joinChar}_preview=${documentPreviewNonce}#${hashParams.toString()}`;
+    }
+  }, [documentPreviewNonce]);
+
+  useEffect(() => {
+    if (!documentUrlModal || documentUrlModal.loading || !documentUrlModal.url) return;
+    const isPdf = documentUrlModal.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) return;
+
+    // Route PDF documents through the existing PDF.js modal to avoid browser PDF viewer
+    // restoring stale zoom/scroll state inside iframe/object embeds.
+    setInspectionReportPreview({
+      reportUrl: documentUrlModal.url,
+      fileName: documentUrlModal.name,
+    });
+    if (documentUrlModal.blobUrl) URL.revokeObjectURL(documentUrlModal.blobUrl);
+    setDocumentUrlModal(null);
+  }, [documentUrlModal]);
 
   // Fetch equipment documents metadata only (no document_url) - document URL loaded on-demand when user clicks View
   const fetchEquipmentDocuments = async (equipmentId: string) => {
@@ -2566,6 +2605,26 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
       .catch(() => {
         setDocumentUrlModal((prev) => (prev ? { ...prev, previewLoading: false } : null));
       });
+  }, []);
+
+  const openInNewTabReliable = useCallback(async (url: string) => {
+    const newTab = window.open('', '_blank');
+    if (!newTab) {
+      window.open(url, '_blank');
+      return;
+    }
+    newTab.opener = null;
+    try {
+      newTab.document.write('<title>Loading document...</title><p style="font-family:sans-serif;padding:16px;">Loading document preview...</p>');
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Failed to fetch document');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      newTab.location.href = blobUrl;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      newTab.location.href = url;
+    }
   }, []);
 
   // Open document preview: if URL already loaded use it; else fetch document URL on-demand and show loader. Use blob URL for iframe so preview works.
@@ -2718,7 +2777,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
         if (!ctx) return;
         const containerWidth = canvas.parentElement?.clientWidth || 800;
         const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.6, Math.max(0.5, (containerWidth - 24) / baseViewport.width));
+        const scale = Math.min(1, Math.max(0.5, (containerWidth - 24) / baseViewport.width));
         const viewport = page.getViewport({ scale });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
@@ -4101,13 +4160,8 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
   // Load progress-section image (last completed milestone that has images) into session cache
   useEffect(() => {
     const isStandalone = projectId === 'standalone';
-    const visibleList = getFilteredAndSortedEquipment(localEquipment, selectedPhase, searchQuery);
-    const start = (currentPage - 1) * itemsPerPage;
-    const visiblePage = visibleList.slice(start, start + itemsPerPage);
-    const visibleIds = new Set(visiblePage.map((eq) => eq.id));
     const toLoad: { cacheKey: string; completionId: string; currentIndex: number }[] = [];
     for (const eq of localEquipment) {
-      if (!visibleIds.has(eq.id)) continue;
       const list = equipmentActivities[eq.id] || [];
       const sorted = [...list].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       const completedMilestones = sorted.filter((a: any) => a.completion && a.activity_type === 'milestone');
@@ -4157,19 +4211,14 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
           setStepImageLoading(prev => ({ ...prev, ...clearPatch }));
         });
     }
-  }, [localEquipment, equipmentActivities, progressSectionImageIndex, projectId, stepImageCache, stepImageLoading, completionImageCountFallback, getActivitiesProgressSegments, currentPage, itemsPerPage, selectedPhase, searchQuery, getFilteredAndSortedEquipment]);
+  }, [localEquipment, equipmentActivities, progressSectionImageIndex, projectId, stepImageCache, stepImageLoading, completionImageCountFallback, getActivitiesProgressSegments]);
 
   // Fetch real image count for every completed milestone completion so we can pick "last milestone with images" and show arrows
   useEffect(() => {
     const isStandalone = projectId === 'standalone';
-    const visibleList = getFilteredAndSortedEquipment(localEquipment, selectedPhase, searchQuery);
-    const start = (currentPage - 1) * itemsPerPage;
-    const visiblePage = visibleList.slice(start, start + itemsPerPage);
-    const visibleIds = new Set(visiblePage.map((eq) => eq.id));
     const toFetch: { completionId: string }[] = [];
     const seen = new Set<string>();
     for (const eq of localEquipment) {
-      if (!visibleIds.has(eq.id)) continue;
       const list = equipmentActivities[eq.id] || [];
       const sorted = [...list].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       const completedMilestones = sorted.filter((a: any) => a.completion && a.activity_type === 'milestone');
@@ -4187,7 +4236,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
         setCompletionImageCountFallback((prev) => ({ ...prev, ...countMap }));
       });
     }
-  }, [localEquipment, equipmentActivities, projectId, completionImageCountFallback, currentPage, itemsPerPage, selectedPhase, searchQuery, getFilteredAndSortedEquipment]);
+  }, [localEquipment, equipmentActivities, projectId, completionImageCountFallback]);
 
   // Submit Mark complete (create completion, auto-feed Updates tab or Progress Image, refresh activities)
   const handleMarkActivityComplete = useCallback(async () => {
@@ -9110,11 +9159,11 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
 
       {/* Document URL Modal - Always rendered via portal outside conditional returns. Blob URL used for iframe so preview works (storage URLs block embedding). */}
       {documentUrlModal && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-2 sm:p-4" style={{ zIndex: 99999 }} onClick={() => {
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-start sm:items-center justify-center overflow-y-auto p-2 sm:p-4" style={{ zIndex: 99999 }} onClick={() => {
           if (documentUrlModal.blobUrl) URL.revokeObjectURL(documentUrlModal.blobUrl);
           setDocumentUrlModal(null);
         }}>
-          <div className="bg-white rounded-lg p-3 sm:p-4 md:p-6 max-w-4xl w-full max-h-[95vh] sm:max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-lg p-3 sm:p-4 md:p-6 max-w-4xl w-full my-2 sm:my-0 max-h-[calc(100vh-1rem)] sm:max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-2 mb-4">
               <h3 className="text-sm sm:text-base md:text-lg font-semibold text-gray-800 truncate pr-2">Document: {documentUrlModal.name}</h3>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -9123,7 +9172,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => { window.open(documentUrlModal.url!, '_blank'); }}
+                      onClick={() => { openInNewTabReliable(documentUrlModal.url!); }}
                       className="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm px-2 sm:px-3 h-7 sm:h-8"
                     >
                       <FileText size={14} className="sm:mr-1 sm:w-4 sm:h-4" />
@@ -9147,7 +9196,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                           URL.revokeObjectURL(url);
                         } catch (error) {
                           console.error('Error downloading file:', error);
-                          window.open(documentUrlModal.url!, '_blank');
+                          openInNewTabReliable(documentUrlModal.url!);
                         }
                       }}
                       className="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-2 sm:px-3 h-7 sm:h-8"
@@ -9193,13 +9242,32 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                 const hasKnownExtension = isPDF || !!isImage;
                 const tryIframe = isPDF || hasKnownExtension === false;
                 if (isPDF || tryIframe) {
+                  const pdfUrl = documentUrlModal.url || previewUrl;
+                  const freshPdfUrl = buildFreshPdfPreviewUrl(pdfUrl);
                   return (
                     <div className="text-center">
-                      <iframe
-                        src={previewUrl}
-                        className="w-full h-[400px] sm:h-[500px] md:h-[600px] border border-gray-200 rounded-lg"
-                        title={documentUrlModal.name}
-                      />
+                      {isPDF ? (
+                        <object
+                          key={freshPdfUrl}
+                          data={freshPdfUrl}
+                          type="application/pdf"
+                          className="w-full h-[60vh] sm:h-[65vh] md:h-[70vh] border border-gray-200 rounded-lg"
+                          aria-label={documentUrlModal.name}
+                        >
+                          <iframe
+                            src={freshPdfUrl}
+                            className="w-full h-[60vh] sm:h-[65vh] md:h-[70vh] border border-gray-200 rounded-lg"
+                            title={documentUrlModal.name}
+                          />
+                        </object>
+                      ) : (
+                        <iframe
+                          key={previewUrl}
+                          src={previewUrl}
+                          className="w-full h-[400px] sm:h-[500px] md:h-[600px] border border-gray-200 rounded-lg"
+                          title={documentUrlModal.name}
+                        />
+                      )}
                     </div>
                   );
                 } else if (isImage) {
@@ -9223,7 +9291,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                       <div className="flex flex-col sm:flex-row gap-2 justify-center">
                         <Button
                           variant="outline"
-                          onClick={() => window.open(documentUrlModal.url, '_blank')}
+                          onClick={() => openInNewTabReliable(documentUrlModal.url!)}
                           className="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
                         >
                           <FileText size={14} className="mr-1 sm:w-4 sm:h-4" />
@@ -9245,7 +9313,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                               URL.revokeObjectURL(url);
                             } catch (error) {
                               console.error('Error downloading file:', error);
-                              window.open(documentUrlModal.url!, '_blank');
+                              openInNewTabReliable(documentUrlModal.url!);
                             }
                           }}
                           className="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
@@ -10276,7 +10344,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                             }
                           }
                           const latestQapWithImages = lastMilestoneWithImages?.comp?.id
-                            ? { completionId: lastMilestoneWithImages.comp.id, imageCount: lastMilestoneWithImages.imageCount, legacyImageUrl: lastMilestoneWithImages.comp.image_url || null }
+                            ? { completionId: lastMilestoneWithImages.comp.id, imageCount: lastMilestoneWithImages.imageCount }
                             : null;
                           if (latestQapWithImages) {
                             const { completionId, imageCount } = latestQapWithImages;
@@ -10303,54 +10371,23 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                                         <Eye size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
                                       </div>
                                   </div>
-                                  ) : (() => {
-                                    // If QAP image is still loading, render already-available progress image immediately.
-                                    const rawCompletionFallback = latestQapWithImages.legacyImageUrl as string | null;
-                                    const completionFallback = (!rawCompletionFallback || rawCompletionFallback === PROGRESS_IMAGE_PLACEHOLDER || (rawCompletionFallback.startsWith('data:image/svg') && rawCompletionFallback.length < 200))
-                                      ? null
-                                      : rawCompletionFallback;
-                                    const rawProgressFallback = item.progressImages?.[0];
-                                    const progressFallback = (!rawProgressFallback || rawProgressFallback === PROGRESS_IMAGE_PLACEHOLDER || (rawProgressFallback.startsWith('data:image/svg') && rawProgressFallback.length < 200))
-                                      ? null
-                                      : rawProgressFallback;
-                                    const fallbackImage = completionFallback || progressFallback;
-                                    if (fallbackImage) {
-                                      return (
-                                        <div
-                                          className="relative cursor-pointer group"
-                                          onClick={() => {
-                                            setShowImagePreview({ url: fallbackImage, equipmentId: item.id, currentIndex: 0 });
-                                          }}
-                                        >
-                                          <img
-                                            src={fallbackImage}
-                                            alt="Progress"
-                                            className="w-full max-w-full h-40 sm:h-52 md:h-64 object-cover rounded-md border border-gray-200 pointer-events-none"
-                                          />
-                                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all rounded-md flex items-center justify-center pointer-events-none">
-                                            <Eye size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                                          </div>
-                                        </div>
-                                      );
-                                    }
-                                    return (
-                                      <div className="w-full h-40 sm:h-52 md:h-64 bg-gray-100 border-2 border-dashed border-gray-300 rounded-md flex items-center justify-center min-h-0">
-                                        <div className="text-center text-gray-500">
-                                          {loading ? (
-                                            <>
-                                              <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-400 border-t-transparent mx-auto mb-2" />
-                                              <div className="text-sm">Loading image...</div>
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Camera size={24} className="mx-auto mb-2" />
-                                              <div className="text-sm">No image</div>
-                                            </>
-                                          )}
-                                        </div>
+                                  ) : (
+                                    <div className="w-full h-40 sm:h-52 md:h-64 bg-gray-100 border-2 border-dashed border-gray-300 rounded-md flex items-center justify-center min-h-0">
+                                      <div className="text-center text-gray-500">
+                                        {loading ? (
+                                          <>
+                                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-400 border-t-transparent mx-auto mb-2" />
+                                            <div className="text-sm">Loading image...</div>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Camera size={24} className="mx-auto mb-2" />
+                                            <div className="text-sm">No image</div>
+                                          </>
+                                        )}
                                       </div>
-                                    );
-                                  })()}
+                                    </div>
+                                  )}
                                   {imageCount > 1 && (
                                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-black/50 rounded-md px-2 py-1">
                                       <Button
@@ -11550,7 +11587,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => window.open(inspectionReportPreview.reportUrl, '_blank', 'noopener,noreferrer')}
+                  onClick={() => openInNewTabReliable(inspectionReportPreview.reportUrl)}
                   className="text-gray-700"
                 >
                   Open in new tab
@@ -11601,7 +11638,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                 </Button>
               </div>
             )}
-            <div className="border border-gray-200 rounded-lg overflow-auto bg-gray-100 flex flex-col items-center justify-center min-h-[400px] max-h-[70vh]">
+            <div className="border border-gray-200 rounded-lg overflow-auto bg-gray-100 flex flex-col items-center justify-start min-h-[400px] max-h-[70vh] p-2 sm:p-3">
               {inspectionReportPdfLoading && (
                 <div className="flex flex-col items-center gap-2 py-16 text-gray-600">
                   <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
@@ -12257,7 +12294,8 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
               ) : documentPreview.file.type === 'application/pdf' ? (
                 <div className="text-center">
                   <iframe
-                    src={URL.createObjectURL(documentPreview.file)}
+                    key={`${documentPreview.name}-${documentPreview.file.lastModified}`}
+                    src={`${URL.createObjectURL(documentPreview.file)}#page=1&view=FitH`}
                     className="w-full h-96 border border-gray-200 rounded-lg"
                     title={documentPreview.name}
                   />
@@ -12954,8 +12992,8 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
 
       {/* Document URL Modal - for database documents - Blob URL used for iframe so preview works */}
       {documentUrlModal && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-2 sm:p-4" style={{ zIndex: 99999 }} onClick={() => { if (documentUrlModal.blobUrl) URL.revokeObjectURL(documentUrlModal.blobUrl); setDocumentUrlModal(null); }}>
-          <div className="bg-white rounded-lg p-3 sm:p-4 md:p-6 max-w-4xl w-full max-h-[95vh] sm:max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-start sm:items-center justify-center overflow-y-auto p-2 sm:p-4" style={{ zIndex: 99999 }} onClick={() => { if (documentUrlModal.blobUrl) URL.revokeObjectURL(documentUrlModal.blobUrl); setDocumentUrlModal(null); }}>
+          <div className="bg-white rounded-lg p-3 sm:p-4 md:p-6 max-w-4xl w-full my-2 sm:my-0 max-h-[calc(100vh-1rem)] sm:max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-2 mb-4">
               <h3 className="text-sm sm:text-base md:text-lg font-semibold text-gray-800 truncate pr-2">Document: {documentUrlModal.name}</h3>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -12964,7 +13002,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => { window.open(documentUrlModal.url!, '_blank'); }}
+                      onClick={() => { openInNewTabReliable(documentUrlModal.url!); }}
                       className="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm px-2 sm:px-3 h-7 sm:h-8"
                     >
                       <FileText size={14} className="sm:mr-1 sm:w-4 sm:h-4" />
@@ -12988,7 +13026,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                           URL.revokeObjectURL(url);
                         } catch (error) {
                           console.error('Error downloading file:', error);
-                          window.open(documentUrlModal.url!, '_blank');
+                          openInNewTabReliable(documentUrlModal.url!);
                         }
                       }}
                       className="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-2 sm:px-3 h-7 sm:h-8"
@@ -13034,13 +13072,32 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                 const hasKnownExtension = isPDF || !!isImage;
                 const tryIframe = isPDF || hasKnownExtension === false;
                 if (isPDF || tryIframe) {
+                  const pdfUrl = documentUrlModal.url || previewUrl;
+                  const freshPdfUrl = buildFreshPdfPreviewUrl(pdfUrl);
                   return (
                     <div className="text-center">
-                      <iframe
-                        src={previewUrl}
-                        className="w-full h-[400px] sm:h-[500px] md:h-[600px] border border-gray-200 rounded-lg"
-                        title={documentUrlModal.name}
-                      />
+                      {isPDF ? (
+                        <object
+                          key={freshPdfUrl}
+                          data={freshPdfUrl}
+                          type="application/pdf"
+                          className="w-full h-[60vh] sm:h-[65vh] md:h-[70vh] border border-gray-200 rounded-lg"
+                          aria-label={documentUrlModal.name}
+                        >
+                          <iframe
+                            src={freshPdfUrl}
+                            className="w-full h-[60vh] sm:h-[65vh] md:h-[70vh] border border-gray-200 rounded-lg"
+                            title={documentUrlModal.name}
+                          />
+                        </object>
+                      ) : (
+                        <iframe
+                          key={previewUrl}
+                          src={previewUrl}
+                          className="w-full h-[400px] sm:h-[500px] md:h-[600px] border border-gray-200 rounded-lg"
+                          title={documentUrlModal.name}
+                        />
+                      )}
                     </div>
                   );
                 } else if (isImage) {
@@ -13064,7 +13121,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                       <div className="flex flex-col sm:flex-row gap-2 justify-center">
                         <Button
                           variant="outline"
-                          onClick={() => window.open(documentUrlModal.url!, '_blank')}
+                          onClick={() => openInNewTabReliable(documentUrlModal.url!)}
                           className="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
                         >
                           <FileText size={14} className="mr-1 sm:w-4 sm:h-4" />
@@ -13086,7 +13143,7 @@ const EquipmentGrid = ({ equipment, projectName, projectId, onBack, onViewDetail
                               URL.revokeObjectURL(url);
                             } catch (error) {
                               console.error('Error downloading file:', error);
-                              window.open(documentUrlModal.url!, '_blank');
+                              openInNewTabReliable(documentUrlModal.url!);
                             }
                           }}
                           className="bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm px-3 sm:px-4 h-8 sm:h-9"
